@@ -19,7 +19,6 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.preprocessing import LabelEncoder
 
 from autoresearch_tabular.config import load_config
 from autoresearch_tabular.memory_graph import MemoryGraph, load_graph
@@ -99,7 +98,7 @@ def profile_columns(X_train: pd.DataFrame, mg: MemoryGraph) -> None:
 
         updates: dict[str, Any] = {}
 
-        if pd.api.types.is_numeric_dtype(X_train[col]) and not pd.api.types.is_bool_dtype(X_train[col]):
+        if pd.api.types.is_numeric_dtype(X_train[col]):
             valid = X_train[col].dropna()
             if len(valid) > 0:
                 quantiles = valid.quantile([0.05, 0.25, 0.75, 0.95]).to_dict()
@@ -163,7 +162,7 @@ def _parse_semantic_tags(program_md_path: Path, columns: list[str]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# 2c. Enumerate derived columns
+# 2c. Derived column enumeration
 # ---------------------------------------------------------------------------
 
 def _enumerate_derived_columns(
@@ -408,6 +407,205 @@ def _variance_scan(
 
 
 # ---------------------------------------------------------------------------
+# 2f. Residual-guided ICC
+# ---------------------------------------------------------------------------
+
+def _compute_icc(residuals: np.ndarray, groups: np.ndarray) -> float:
+    """Compute intraclass correlation coefficient (ICC).
+
+    ICC = (MSB - MSW) / (MSB + (k-1)*MSW)
+    where MSB = between-group mean square, MSW = within-group mean square, k = mean group size.
+    """
+    unique_groups = np.unique(groups)
+    if len(unique_groups) < 2:
+        return 0.0
+
+    grand_mean = residuals.mean()
+    n_total = len(residuals)
+    n_groups = len(unique_groups)
+
+    # Between-group and within-group sums of squares
+    ssb = 0.0
+    ssw = 0.0
+    total_n = 0
+    for g in unique_groups:
+        mask = groups == g
+        group_vals = residuals[mask]
+        n_g = len(group_vals)
+        if n_g == 0:
+            continue
+        group_mean = group_vals.mean()
+        ssb += n_g * (group_mean - grand_mean) ** 2
+        ssw += ((group_vals - group_mean) ** 2).sum()
+        total_n += n_g
+
+    df_between = n_groups - 1
+    df_within = total_n - n_groups
+
+    if df_between <= 0 or df_within <= 0:
+        return 0.0
+
+    msb = ssb / df_between
+    msw = ssw / df_within
+    k = total_n / n_groups  # mean group size
+
+    denom = msb + (k - 1) * msw
+    if denom <= 0:
+        return 0.0
+
+    return float((msb - msw) / denom)
+
+
+def _compute_residual_icc(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    entity_keys: list[dict[str, Any]],
+    config: Any,
+) -> dict[tuple[str, ...], float]:
+    """Train a quick XGBoost on raw features, compute residual ICC per entity key.
+
+    Returns dict mapping entity_columns tuple to ICC value.
+    """
+    if not entity_keys:
+        return {}
+
+    # Label-encode string targets for XGBoost
+    if not pd.api.types.is_numeric_dtype(y_train):
+        from sklearn.preprocessing import LabelEncoder
+        _le = LabelEncoder()
+        y_train = pd.Series(_le.fit_transform(y_train), index=y_train.index)
+
+    # Raw numeric features only, NaN → median
+    numeric_cols = [c for c in X_train.columns if pd.api.types.is_numeric_dtype(X_train[c])]
+    X_numeric = X_train[numeric_cols].copy()
+    medians = X_numeric.median()
+    X_numeric = X_numeric.fillna(medians)
+
+    # Replace any remaining inf
+    X_numeric = X_numeric.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    # Fit XGBoost based on task type
+    is_classification = config.is_classification
+    n_classes = y_train.nunique()
+
+    if is_classification and n_classes > 2:
+        # Multi-class: predict probability of true class, residual = 1 - p(true)
+        model = xgb.XGBClassifier(
+            n_estimators=RESIDUAL_TREES, learning_rate=0.05,
+            random_state=42, n_jobs=1, verbosity=0,
+            objective="multi:softprob",
+        )
+        model.fit(X_numeric, y_train)
+        probs = model.predict_proba(X_numeric)
+        # 1 - p(true_class) for each row
+        residuals = np.array([
+            1.0 - probs[i, int(y_train.iloc[i])]
+            for i in range(len(y_train))
+        ])
+    elif is_classification:
+        # Binary: residual = y - p(positive)
+        model = xgb.XGBClassifier(
+            n_estimators=RESIDUAL_TREES, learning_rate=0.05,
+            random_state=42, n_jobs=1, verbosity=0,
+        )
+        model.fit(X_numeric, y_train)
+        probs = model.predict_proba(X_numeric)[:, 1]
+        residuals = y_train.values - probs
+    else:
+        # Regression: residual = y - y_pred
+        model = xgb.XGBRegressor(
+            n_estimators=RESIDUAL_TREES, learning_rate=0.05,
+            random_state=42, n_jobs=1, verbosity=0,
+        )
+        model.fit(X_numeric, y_train)
+        preds = model.predict(X_numeric)
+        residuals = y_train.values - preds
+
+    # Compute ICC per entity key
+    icc_results: dict[tuple[str, ...], float] = {}
+    for ek in entity_keys:
+        ek_cols = list(ek["columns"])
+        # Build group labels
+        if len(ek_cols) == 1:
+            group_labels = X_train[ek_cols[0]].fillna(-999).astype(str).values
+        else:
+            parts = [X_train[c].fillna(-999).astype(str) for c in ek_cols]
+            group_labels = parts[0].str.cat(parts[1:], sep="_").values
+        icc = _compute_icc(residuals, group_labels)
+        icc_results[ek["columns"]] = icc
+
+    return icc_results
+
+
+# ---------------------------------------------------------------------------
+# 2g. Graph population
+# ---------------------------------------------------------------------------
+
+def _populate_graph(
+    mg: MemoryGraph,
+    derived_exprs: list[dict[str, Any]],
+    entity_keys: list[dict[str, Any]],
+    invariants: list[dict[str, Any]],
+    icc_results: dict[tuple[str, ...], float],
+) -> None:
+    """Create DerivedColumn and EntityKey nodes, add all discovery edges."""
+    G = mg.graph
+
+    # Create DerivedColumn nodes
+    for d in derived_exprs:
+        node_id = _node_id_derived(d["expr"])
+        G.add_node(
+            node_id,
+            node_type="DerivedColumn",
+            name=d["expr"],
+            expr=d["expr"],
+            col_a=d["col_a"],
+            col_b=d["col_b"],
+            operation=d["operation"],
+            variance=float(d["variance"]),
+        )
+        # DERIVED_FROM_COLS edges
+        col_a_id = f"col_{d['col_a']}"
+        col_b_id = f"col_{d['col_b']}"
+        if G.has_node(col_a_id):
+            G.add_edge(node_id, col_a_id, rel="DERIVED_FROM_COLS")
+        if G.has_node(col_b_id):
+            G.add_edge(node_id, col_b_id, rel="DERIVED_FROM_COLS")
+
+    # Create EntityKey nodes
+    for ek in entity_keys:
+        node_id = _node_id_entity(ek["columns"])
+        icc = icc_results.get(ek["columns"])
+        G.add_node(
+            node_id,
+            node_type="EntityKey",
+            name=", ".join(ek["columns"]),
+            columns=list(ek["columns"]),
+            cardinality=int(ek["cardinality"]),
+            residual_icc=float(icc) if icc is not None else None,
+        )
+        # CANDIDATE_ENTITY_KEY edges
+        for col in ek["columns"]:
+            col_id = f"col_{col}"
+            if G.has_node(col_id):
+                G.add_edge(node_id, col_id, rel="CANDIDATE_ENTITY_KEY")
+
+    # INVARIANT_WITHIN edges
+    for inv in invariants:
+        src_id = inv["node_id"]
+        tgt_id = _node_id_entity(inv["entity_columns"])
+        if G.has_node(src_id) and G.has_node(tgt_id):
+            G.add_edge(
+                src_id, tgt_id,
+                rel="INVARIANT_WITHIN",
+                median_cv=float(inv["median_cv"]),
+                n_groups=int(inv["n_groups"]),
+            )
+
+    mg.save()
+
+
+# ---------------------------------------------------------------------------
 # 2h. Main entry point
 # ---------------------------------------------------------------------------
 
@@ -453,6 +651,7 @@ def run_discovery() -> dict[str, Any]:
     # 2c. Enumerate derived columns
     print("[3/5] Enumerating derived columns ...")
     derived_exprs = _enumerate_derived_columns(X_train, semantic_groups, config.target)
+    print(f"   {len(derived_exprs)} candidate derived columns.")
 
     # 2d. Identify entity keys
     print("[4/5] Identifying entity keys ...")
@@ -464,11 +663,34 @@ def run_discovery() -> dict[str, Any]:
     # 2e. Within-group variance scan
     print("[5/5] Scanning for invariant expressions ...")
     invariants = _variance_scan(X_train, derived_exprs, entity_keys)
-    print(f"   {len(invariants)} invariant expressions found.")
+    print(f"   {len(invariants)} invariant (expression, entity key) pairs found.")
+
+    # 2f. Residual ICC
+    print("\n   Computing residual ICC ...")
+    icc_results = _compute_residual_icc(X_train, y_train, entity_keys, config)
+    for ek_cols, icc in sorted(icc_results.items(), key=lambda x: -x[1]):
+        print(f"     ({', '.join(ek_cols)})  ICC={icc:.4f}")
+
+    # 2g. Populate graph
+    # Strip series from derived_exprs before passing to graph (not serializable)
+    for d in derived_exprs:
+        d.pop("series", None)
+    _populate_graph(mg, derived_exprs, entity_keys, invariants, icc_results)
 
     elapsed = time.time() - t0
     print(f"\nDiscovery complete in {elapsed:.1f}s.")
+    print(f"   DerivedColumn nodes: {len(derived_exprs)}")
+    print(f"   EntityKey nodes:     {len(entity_keys)}")
+    print(f"   Invariant pairs:     {len(invariants)}")
+
+    if invariants:
+        print("\n   Top invariants:")
+        for inv in invariants[:10]:
+            print(f"     {inv['expr']:<50}  within ({', '.join(inv['entity_columns'])})  CV={inv['median_cv']:.4f}")
 
     return {
+        "n_derived": len(derived_exprs),
+        "n_entity_keys": len(entity_keys),
+        "n_invariants": len(invariants),
         "elapsed_seconds": elapsed,
     }
