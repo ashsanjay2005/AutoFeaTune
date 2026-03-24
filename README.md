@@ -1,8 +1,10 @@
 <div align="center">
 
-# autoresearch-tabular
+# AutoFeaTune
 
 **An AI agent that engineers features while you sleep.**
+
+Inspired by [Andrej Karpathy's](https://karpathy.ai/) philosophy of letting AI systems run autonomously on well-defined tasks.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -71,31 +73,50 @@ The agent never cheats. Statistical queries are rate-limited and run only on tra
 
 ---
 
-## Quickstart
+## How to Use
 
-> Requires Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and an AI agent (Claude Code, OpenAI Codex, or similar).
+> **Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/), and an AI coding agent.
+
+### 1. Clone and install
 
 ```bash
-# 1. Clone
-git clone https://github.com/ashsanjay2005/autoresearch-tabular.git
-cd autoresearch-tabular
+git clone https://github.com/PranavBedi11/AutoFeaTune.git
+cd AutoFeaTune
 uv sync
-
-# 2. Zero-config demo — downloads California Housing, wires everything up
-uv run autoresearch demo
-
-# 3. Initialize and prepare
-uv run autoresearch init
-uv run autoresearch prepare
-
-# 4. Discover hidden structure (takes 10–20 min on large datasets — let it finish)
-uv run autoresearch discover
-
-# 5. Hand off to the agent
-claude AGENTS.md   # or whichever agent you use
 ```
 
-The agent reads `AGENTS.md` and runs until the stop condition is hit. You can leave it overnight.
+### 2. Try the demo (optional)
+
+This downloads the California Housing dataset and wires up everything automatically — good for a first run.
+
+```bash
+uv run autoresearch demo
+```
+
+### 3. Set up your own dataset
+
+Edit `config.yaml` to point at your CSV, set the target column and metric. Then fill in `program.md` with any domain knowledge — what you're predicting, what signals to look for, what to avoid. The more you put here, the better the agent performs.
+
+```bash
+# Or use the interactive wizard:
+uv run autoresearch setup data/my_data.csv
+```
+
+### 4. Initialize
+
+```bash
+uv run autoresearch init       # sets up git ratchet + memory graph
+uv run autoresearch prepare    # loads data, creates splits, registers columns
+uv run autoresearch discover   # scans for hidden structure (can take 10–20 min — let it finish)
+```
+
+### 5. Hand off to an AI agent
+
+Open your AI coding agent of choice (Claude Code, Cursor, Windsurf, etc.), skip any permission prompts so it can run autonomously, and tell it:
+
+> **"Follow `AGENTS.md` exactly. Do not stop until the stop condition is hit."**
+
+The agent reads `AGENTS.md`, enters the feature engineering loop, and runs until it hits the stop condition or you manually intervene. You can leave it running overnight.
 
 ---
 

@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ashsanjay2005/autoresearch-tabular"
-Issues = "https://github.com/ashsanjay2005/autoresearch-tabular/issues"
+Homepage = "https://github.com/PranavBedi11/AutoFeaTune"
+Issues = "https://github.com/PranavBedi11/AutoFeaTune/issues"
 
 [project.scripts]
 autoresearch = "autoresearch_tabular.cli:main"

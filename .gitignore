@@ -3,6 +3,7 @@ db/
 run.log
 results.tsv
 final_features_report.md
+tests/
 
 # Dataset files (user-provided, often large)
 data/
