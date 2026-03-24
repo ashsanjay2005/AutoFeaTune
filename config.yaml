@@ -1,0 +1,87 @@
+# ============================================================================
+# autoresearch-tabular
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Data source
+# ---------------------------------------------------------------------------
+
+# Path to your CSV dataset (relative to repo root)
+data_path: data/your_dataset.csv
+
+# Name of the column to predict (must exist in the CSV)
+target: your_target_column
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+# Evaluation metric — determines how the agent optimizes
+# Valid values:
+#   Regression:     rmse    (Root Mean Squared Error, lower is better)
+#                   mae     (Mean Absolute Error, lower is better)
+#   Classification: accuracy (Accuracy, higher is better)
+#                   auc     (Area Under ROC Curve, higher is better)
+#                   logloss (Log Loss, lower is better)
+#                   f1      (F1 Score, higher is better)
+metric: rmse
+
+# ---------------------------------------------------------------------------
+# Splitting strategy
+# ---------------------------------------------------------------------------
+
+# Temporal split column (optional)
+# Set to a date/datetime column name to use temporal train/val splits:
+#   - Data is sorted by this column before splitting
+#   - Training set uses earlier rows, validation set uses later rows
+#   - Prevents temporal leakage
+# Set to null for random splits (default)
+date_col: null
+
+# Number of cross-validation folds
+# More folds = more reliable estimate, but slower training
+# Recommended: 5 for most datasets, 3 for very large datasets
+n_folds: 5
+
+# Random seed for reproducibility
+random_seed: 42
+
+# ---------------------------------------------------------------------------
+# Column configuration
+# ---------------------------------------------------------------------------
+
+# Columns to exclude before feature engineering
+# Use this for:
+#   - ID columns (e.g., customer_id, row_number)
+#   - Known leaky columns (e.g., columns derived from the target)
+#   - Columns you know are useless
+# Example: [Id, CustomerID, RowNum]
+exclude_columns: []
+
+# Explicit categorical columns (optional)
+# If empty, the system auto-detects based on:
+#   - object / category / bool dtype → categorical
+#   - int or float columns with cardinality < 20 → categorical
+# Set this explicitly if auto-detection gets it wrong
+# Example: [Neighborhood, HouseStyle, Condition]
+categorical_columns: []
+
+# ---------------------------------------------------------------------------
+# Run budget
+# ---------------------------------------------------------------------------
+
+# How long to let the agent run per session, in minutes
+# The loop checks this at the start of each iteration and stops when exceeded
+# Examples: 60 (1 hour), 480 (8 hours / overnight), 1440 (24 hours)
+time_budget_minutes: 45
+
+# ---------------------------------------------------------------------------
+# Improvement threshold
+# ---------------------------------------------------------------------------
+
+# Minimum improvement required to keep an experiment, expressed as a fraction
+# of the current best composite score
+# 0.001 = must improve by at least 0.1% relative to the current best
+# 0.005 = must improve by at least 0.5% (stricter — fewer experiments kept)
+# 0.0   = keep any positive improvement, even noise (not recommended)
+min_delta: 0.001
