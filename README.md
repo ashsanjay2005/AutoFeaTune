@@ -102,7 +102,7 @@ Edit `config.yaml` to point at your CSV, set the target column and metric. Then 
 uv run autoresearch setup data/my_data.csv
 ```
 
-### 4. Initialize
+### 4. Initialize (Optinal skipping to step 5 and letting the AI agent figure it out also works) 
 
 ```bash
 uv run autoresearch init       # sets up git ratchet + memory graph
